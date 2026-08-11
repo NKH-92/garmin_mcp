@@ -5,6 +5,8 @@ Modular MCP Server for Garmin Connect Data
 import os
 import sys
 import base64
+import shutil
+from pathlib import Path
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -88,6 +90,31 @@ if password and password_file:
 elif password_file:
     with open(password_file, "r") as password_file:
         password = password_file.read().rstrip()
+
+def _prepare_tokenstore_from_secret() -> None:
+    """Copy a read-only mounted token secret into a writable runtime directory."""
+    secret_file = os.getenv("GARMIN_TOKEN_SECRET_FILE")
+    if not secret_file:
+        return
+
+    source = Path(secret_file)
+    if not source.is_file():
+        raise FileNotFoundError(f"Garmin token secret file not found: {source}")
+
+    runtime_dir = Path(
+        os.getenv("GARMIN_TOKEN_RUNTIME_DIR", "/tmp/garminconnect")
+    )
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(runtime_dir, 0o700)
+
+    runtime_token = runtime_dir / "garmin_tokens.json"
+    shutil.copyfile(source, runtime_token)
+    os.chmod(runtime_token, 0o600)
+
+    os.environ["GARMINTOKENS"] = str(runtime_dir)
+
+
+_prepare_tokenstore_from_secret()
 
 tokenstore = token_utils.get_token_path()
 tokenstore_base64 = token_utils.get_token_base64_path()
