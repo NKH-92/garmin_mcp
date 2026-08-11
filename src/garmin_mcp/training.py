@@ -441,8 +441,8 @@ def register_tools(app):
                 return f"No HRV data found for {date}."
 
             # Extract the summary from hrvSummary key
-            summary = hrv_data.get("hrvSummary", {})
-            baseline = summary.get("baseline", {})
+            summary = hrv_data.get("hrvSummary") or {}
+            baseline = summary.get("baseline") or {}
 
             # Curate to essential fields only
             curated = {
