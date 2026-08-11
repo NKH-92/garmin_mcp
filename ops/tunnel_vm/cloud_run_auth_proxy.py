@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import subprocess
 import threading
 import time
 import urllib.error
@@ -64,6 +65,61 @@ class IdentityTokenProvider:
             self._token = token
             self._expires_at = _jwt_exp(token)
             return token
+
+
+class GcloudIdentityTokenProvider:
+    def __init__(
+        self,
+        audience: str,
+        service_account: str,
+        gcloud_path: str = "gcloud",
+        refresh_skew_seconds: int = 300,
+    ) -> None:
+        self.audience = audience
+        self.service_account = service_account
+        self.gcloud_path = gcloud_path
+        self.refresh_skew_seconds = refresh_skew_seconds
+        self._token = ""
+        self._expires_at = 0
+        self._lock = threading.Lock()
+
+    def get(self) -> str:
+        now = int(time.time())
+        if self._token and now < self._expires_at - self.refresh_skew_seconds:
+            return self._token
+        with self._lock:
+            now = int(time.time())
+            if self._token and now < self._expires_at - self.refresh_skew_seconds:
+                return self._token
+            result = subprocess.run(
+                [
+                    self.gcloud_path,
+                    "auth",
+                    "print-identity-token",
+                    f"--impersonate-service-account={self.service_account}",
+                    f"--audiences={self.audience}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            token = result.stdout.strip()
+            self._token = token
+            self._expires_at = _jwt_exp(token)
+            return token
+
+
+def make_token_provider(audience: str):
+    auth_mode = os.environ.get("CLOUD_RUN_AUTH_MODE", "metadata").lower()
+    if auth_mode == "metadata":
+        return IdentityTokenProvider(audience)
+    if auth_mode == "gcloud":
+        service_account = os.environ["CLOUD_RUN_IMPERSONATE_SERVICE_ACCOUNT"]
+        gcloud_path = os.environ.get("GCLOUD_PATH", "gcloud")
+        return GcloudIdentityTokenProvider(audience, service_account, gcloud_path)
+    raise ValueError(f"Unsupported CLOUD_RUN_AUTH_MODE: {auth_mode}")
 
 
 class CloudRunProxyHandler(BaseHTTPRequestHandler):
@@ -138,7 +194,7 @@ class CloudRunProxyServer(ThreadingHTTPServer):
     def __init__(self, listen: tuple[str, int], cloud_run_base_url: str) -> None:
         super().__init__(listen, CloudRunProxyHandler)
         self.cloud_run_base_url = cloud_run_base_url.rstrip("/")
-        self.token_provider = IdentityTokenProvider(self.cloud_run_base_url)
+        self.token_provider = make_token_provider(self.cloud_run_base_url)
         self.max_request_bytes = 10 * 1024 * 1024
         self.max_response_bytes = 10 * 1024 * 1024
         self.upstream_timeout_seconds = 600
