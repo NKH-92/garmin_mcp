@@ -2,7 +2,7 @@
 
 The script asks gcloud for the service URL and an impersonated ID token, checks
 the Cloud Run-safe health route, performs the MCP initialize handshake, verifies
-the read-only tool allowlist, and calls get_training_readiness.
+the read-only tool allowlist, and calls key tools.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ EXPECTED_TOOLS = {
     "get_activity",
     "get_garmin_coach_workouts",
     "get_workout_by_id",
+    "get_race_calendar",
 }
 
 
@@ -89,6 +90,21 @@ def _readiness_payload(result) -> list[dict]:
     return decoded
 
 
+def _race_payload(result) -> dict:
+    if result.isError:
+        raise RuntimeError("get_race_calendar returned an MCP error")
+
+    payload = "\n".join(
+        block.text for block in result.content if hasattr(block, "text")
+    )
+    decoded = json.loads(payload)
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("races"), list):
+        raise RuntimeError("get_race_calendar returned an unexpected schema")
+    if decoded.get("count") != len(decoded["races"]):
+        raise RuntimeError("get_race_calendar count does not match its race list")
+    return decoded
+
+
 async def _verify(args: argparse.Namespace) -> None:
     service_url = _service_url(args.project, args.region, args.service)
     token = _identity_token(service_url, args.impersonate_service_account)
@@ -134,6 +150,12 @@ async def _verify(args: argparse.Namespace) -> None:
                     "get_training_readiness="
                     + json.dumps(summary, ensure_ascii=False, sort_keys=True)
                 )
+
+                result = await session.call_tool(
+                    "get_race_calendar", {"reference_date": args.date}
+                )
+                race_calendar = _race_payload(result)
+                print(f"get_race_calendar=count:{race_calendar['count']}")
 
 
 def _parse_args() -> argparse.Namespace:
