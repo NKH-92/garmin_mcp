@@ -16,6 +16,18 @@ $proxySource = Join-Path $repoRoot "ops\tunnel_vm\cloud_run_auth_proxy.py"
 $python = (Get-Command python.exe -ErrorAction Stop).Source
 $gcloud = (Get-Command gcloud.cmd -ErrorAction Stop).Source
 
+Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+foreach ($listener in (Get-NetTCPConnection -State Listen -LocalPort 8080,8765 -ErrorAction SilentlyContinue)) {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
+    if ($process.CommandLine -like "*$RuntimeDir*") {
+        Stop-Process -Id $listener.OwningProcess -Force
+    }
+    else {
+        throw "예상하지 못한 프로세스가 포트 $($listener.LocalPort)를 사용 중입니다."
+    }
+}
+Start-Sleep -Seconds 1
+
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $RuntimeDir "logs") | Out-Null
 Copy-Item -LiteralPath $proxySource -Destination (Join-Path $RuntimeDir "cloud_run_auth_proxy.py") -Force
@@ -87,6 +99,7 @@ try {
         }
     }
     if (-not `$ready) { throw 'Cloud Run auth proxy did not start' }
+    Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 30 | Out-Null
     & (Join-Path `$runtimeDir 'tunnel-client.exe') run --config (Join-Path `$runtimeDir 'tunnel-client.yaml') *>> `$tunnelLog
     exit `$LASTEXITCODE
 } finally {
@@ -103,5 +116,12 @@ $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "OpenAI Secure MCP Tunnel for Garmin" -Force | Out-Null
 
 & (Join-Path $RuntimeDir "tunnel-client.exe") --version
-Write-Host "무료 Windows Tunnel 설치 완료: $RuntimeDir"
-Write-Host "새 runtime key를 설치하기 전까지 작업은 시작되지 않습니다."
+$keyPath = Join-Path $RuntimeDir "control-plane-api-key"
+if (Test-Path $keyPath) {
+    Start-ScheduledTask -TaskName $taskName
+    Write-Host "무료 Windows Tunnel 설치 및 시작 완료: $RuntimeDir"
+}
+else {
+    Write-Host "무료 Windows Tunnel 설치 완료: $RuntimeDir"
+    Write-Host "runtime key를 설치하기 전까지 작업은 시작되지 않습니다."
+}
