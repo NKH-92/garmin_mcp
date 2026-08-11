@@ -444,7 +444,9 @@ GARMIN_MCP_TRANSPORT=streamable-http garmin-mcp
 When an HTTP transport is selected:
 
 - MCP clients connect to the **`/mcp`** path (e.g. `http://localhost:8000/mcp`).
-- A plain **`GET /healthz`** endpoint is exposed for liveness/readiness probes.
+- A plain **`GET /health`** endpoint is exposed for liveness/readiness probes.
+  Cloud Run reserves some paths ending in `z`, including `/healthz`, so use
+  `/health` for portable external health checks.
 
 The server itself performs **no authentication** on the HTTP endpoint — put it behind a reverse proxy (nginx, Traefik, Authelia, etc.) if it is reachable beyond localhost.
 

@@ -138,6 +138,7 @@ disabled_tools = _parse_tool_set(os.getenv("GARMIN_DISABLED_TOOLS"))
 
 
 _VALID_TRANSPORTS = ("stdio", "streamable-http", "sse")
+_HEALTH_PATH = "/health"
 
 
 class _GarminProxy:
@@ -202,6 +203,16 @@ def _parse_transport_config() -> tuple[str, str, int]:
         or "8000"
     )
     return transport, http_host, http_port
+
+
+def _register_http_routes(fastmcp: FastMCP) -> None:
+    """Register HTTP-only routes that are safe behind managed proxies."""
+    from starlette.requests import Request
+    from starlette.responses import PlainTextResponse
+
+    @fastmcp.custom_route(_HEALTH_PATH, methods=["GET"])
+    async def health(_request: "Request") -> "PlainTextResponse":
+        return PlainTextResponse("ok")
 
 
 class _ToolFilter:
@@ -483,15 +494,12 @@ def main():
             file=sys.stderr,
         )
 
-    # When serving over HTTP, expose a plain health endpoint for k8s probes.
+    # When serving over HTTP, expose a plain health endpoint for probes.
+    # Avoid /healthz: Cloud Run reserves some paths ending in "z" and returns
+    # a Google frontend 404 before the request reaches this application.
     # The MCP endpoint itself requires a handshake and isn't probe-friendly.
     if transport != "stdio":
-        from starlette.requests import Request
-        from starlette.responses import PlainTextResponse
-
-        @fastmcp.custom_route("/healthz", methods=["GET"])
-        async def healthz(_request: "Request") -> "PlainTextResponse":
-            return PlainTextResponse("ok")
+        _register_http_routes(fastmcp)
 
         print(
             f"Serving MCP over {transport} on {http_host}:{http_port}",
