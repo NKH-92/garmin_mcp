@@ -169,7 +169,11 @@ def _parse_transport_config() -> tuple[str, str, int]:
     # so a 0.0.0.0 default would expose full read/write access to the user's
     # Garmin account to the whole network. Opt in explicitly with GARMIN_MCP_HOST.
     http_host = os.getenv("GARMIN_MCP_HOST", "127.0.0.1")
-    http_port = int(os.getenv("GARMIN_MCP_PORT", "8000"))
+    http_port = int(
+        os.getenv("GARMIN_MCP_PORT")
+        or os.getenv("PORT")
+        or "8000"
+    )
     return transport, http_host, http_port
 
 

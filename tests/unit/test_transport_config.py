@@ -15,6 +15,7 @@ class TestParseTransportConfig:
             os.environ.pop("GARMIN_MCP_TRANSPORT", None)
             os.environ.pop("GARMIN_MCP_HOST", None)
             os.environ.pop("GARMIN_MCP_PORT", None)
+            os.environ.pop("PORT", None)
             transport, host, port = _parse_transport_config()
         assert transport == "stdio"
         assert host == "127.0.0.1"
@@ -48,6 +49,21 @@ class TestParseTransportConfig:
 
     def test_custom_port_is_read(self):
         with patch.dict(os.environ, {"GARMIN_MCP_PORT": "9000"}):
+            _, _, port = _parse_transport_config()
+        assert port == 9000
+
+    def test_cloud_run_port_is_read_when_garmin_port_unset(self):
+        with patch.dict(os.environ, {"PORT": "8080"}, clear=False):
+            os.environ.pop("GARMIN_MCP_PORT", None)
+            _, _, port = _parse_transport_config()
+        assert port == 8080
+
+    def test_garmin_port_takes_precedence_over_cloud_run_port(self):
+        with patch.dict(
+            os.environ,
+            {"GARMIN_MCP_PORT": "9000", "PORT": "8080"},
+            clear=False,
+        ):
             _, _, port = _parse_transport_config()
         assert port == 9000
 
