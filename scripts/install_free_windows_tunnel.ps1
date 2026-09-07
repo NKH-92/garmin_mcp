@@ -1,5 +1,7 @@
 param(
-    [string]$RuntimeDir = (Join-Path $env:LOCALAPPDATA "GarminMcpTunnel")
+    [string]$RuntimeDir = (Join-Path $env:LOCALAPPDATA "GarminMcpTunnel"),
+    [ValidateRange(1024, 65535)]
+    [int]$ProxyPort = 18065
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +12,7 @@ $tunnelId = "tunnel_6a7b0e9cf41c81918e14bc9d46db9922"
 $cloudRunUrl = "https://garmin-mcp-smrc6iymhq-du.a.run.app"
 $serviceAccount = "garmin-mcp-tunnel-local@garmin-work-collector.iam.gserviceaccount.com"
 $taskName = "Garmin MCP Tunnel"
+$proxyPortCandidates = @($ProxyPort, 28065, 38065, 48065) | Select-Object -Unique
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $proxySource = Join-Path $repoRoot "ops\tunnel_vm\cloud_run_auth_proxy.py"
@@ -17,7 +20,7 @@ $python = (Get-Command python.exe -ErrorAction Stop).Source
 $gcloud = (Get-Command gcloud.cmd -ErrorAction Stop).Source
 
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-foreach ($listener in (Get-NetTCPConnection -State Listen -LocalPort 8080,8765 -ErrorAction SilentlyContinue)) {
+foreach ($listener in (Get-NetTCPConnection -State Listen -LocalPort (@(8080, 8765) + $proxyPortCandidates) -ErrorAction SilentlyContinue)) {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
     if ($process.CommandLine -like "*$RuntimeDir*") {
         Stop-Process -Id $listener.OwningProcess -Force
@@ -67,7 +70,7 @@ admin_ui:
 mcp:
   server_urls:
     - channel: main
-      url: http://127.0.0.1:8765/mcp
+      url: http://127.0.0.1:$ProxyPort/mcp
 "@
 [IO.File]::WriteAllText((Join-Path $RuntimeDir "tunnel-client.yaml"), $config, [Text.UTF8Encoding]::new($false))
 
@@ -81,6 +84,27 @@ $runner = @"
 `$env:CLOUD_RUN_BASE_URL = '$cloudRunUrl'
 `$env:CLOUD_RUN_IMPERSONATE_SERVICE_ACCOUNT = '$serviceAccount'
 `$env:GCLOUD_PATH = '$escapedGcloud'
+`$proxyPortCandidates = @($($proxyPortCandidates -join ', '))
+`$proxyPort = `$null
+foreach (`$candidate in `$proxyPortCandidates) {
+    `$probe = `$null
+    try {
+        `$probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, `$candidate)
+        `$probe.Start()
+        `$proxyPort = `$candidate
+        break
+    } catch {
+        continue
+    } finally {
+        if (`$probe) { `$probe.Stop() }
+    }
+}
+if (-not `$proxyPort) { throw 'No configured proxy port can be bound on loopback' }
+`$env:PROXY_LISTEN_PORT = [string]`$proxyPort
+`$configPath = Join-Path `$runtimeDir 'tunnel-client.yaml'
+`$configText = Get-Content -Raw -LiteralPath `$configPath
+`$configText = `$configText -replace 'url:\s+http://127\.0\.0\.1:\d+/mcp', "url: http://127.0.0.1:`$proxyPort/mcp"
+[IO.File]::WriteAllText(`$configPath, `$configText, [Text.UTF8Encoding]::new(`$false))
 `$proxyOut = Join-Path `$runtimeDir 'logs\proxy.out.log'
 `$proxyErr = Join-Path `$runtimeDir 'logs\proxy.err.log'
 `$tunnelLog = Join-Path `$runtimeDir 'logs\tunnel.log'
@@ -90,7 +114,7 @@ try {
     `$ready = `$false
     for (`$attempt = 0; `$attempt -lt 30; `$attempt++) {
         try {
-            `$client = [Net.Sockets.TcpClient]::new('127.0.0.1', 8765)
+            `$client = [Net.Sockets.TcpClient]::new('127.0.0.1', `$proxyPort)
             `$client.Dispose()
             `$ready = `$true
             break
@@ -99,8 +123,8 @@ try {
         }
     }
     if (-not `$ready) { throw 'Cloud Run auth proxy did not start' }
-    Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 30 | Out-Null
-    & (Join-Path `$runtimeDir 'tunnel-client.exe') run --config (Join-Path `$runtimeDir 'tunnel-client.yaml') *>> `$tunnelLog
+    Invoke-WebRequest -Uri "http://127.0.0.1:`$proxyPort/health" -UseBasicParsing -TimeoutSec 30 | Out-Null
+    & (Join-Path `$runtimeDir 'tunnel-client.exe') run --config `$configPath *>> `$tunnelLog
     exit `$LASTEXITCODE
 } finally {
     if (`$proxy -and -not `$proxy.HasExited) { Stop-Process -Id `$proxy.Id -Force }
