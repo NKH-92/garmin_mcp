@@ -28,6 +28,25 @@ class TestGarminProxy:
         proxy = self._proxy(get_full_name="Alice")
         assert proxy.get_full_name() == "Alice"
 
+    def test_successful_call_checks_for_refreshed_tokens(self):
+        client = Mock()
+        client.get_full_name.return_value = "Alice"
+        publisher = Mock()
+        proxy = _GarminProxy(client, publisher)
+
+        assert proxy.get_full_name() == "Alice"
+        publisher.publish_if_changed.assert_called_once_with()
+
+    def test_failed_call_does_not_publish_tokens(self):
+        client = Mock()
+        client.get_activities.side_effect = ValueError("unexpected")
+        publisher = Mock()
+        proxy = _GarminProxy(client, publisher)
+
+        with pytest.raises(ValueError, match="unexpected"):
+            proxy.get_activities()
+        publisher.publish_if_changed.assert_not_called()
+
     def test_non_callable_attribute_passes_through(self):
         client = Mock()
         client.some_attr = 42

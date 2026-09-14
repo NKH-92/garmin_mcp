@@ -15,6 +15,8 @@ def test_main_registers_tools_and_starts_stdio(monkeypatch):
     monkeypatch.delenv("GARMIN_MCP_HOST", raising=False)
     monkeypatch.delenv("GARMIN_MCP_PORT", raising=False)
     monkeypatch.setattr(garmin_mcp, "init_api", lambda _email, _password: Mock())
+    publisher = Mock()
+    monkeypatch.setattr(garmin_mcp, "token_publisher", publisher)
 
     def capture_run(self, **kwargs):
         tools = asyncio.run(self.list_tools())
@@ -35,3 +37,4 @@ def test_main_registers_tools_and_starts_stdio(monkeypatch):
     assert run_calls[0]["tool_count"] >= 10
     assert "get_devices" in run_calls[0]["tool_names"]
     assert "get_workouts" in run_calls[0]["tool_names"]
+    publisher.publish_if_changed.assert_called_once_with()

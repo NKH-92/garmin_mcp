@@ -32,6 +32,7 @@ from garmin_mcp import workout_builders
 from garmin_mcp import courses
 from garmin_mcp import race_calendar
 from garmin_mcp import activity_analysis
+from garmin_mcp.cloud_token_persistence import SecretTokenPublisher
 
 
 def is_interactive_terminal() -> bool:
@@ -120,6 +121,7 @@ _prepare_tokenstore_from_secret()
 tokenstore = token_utils.get_token_path()
 tokenstore_base64 = token_utils.get_token_base64_path()
 is_cn = os.getenv("GARMIN_IS_CN", "false").lower() in ("true", "1", "yes")
+token_publisher = SecretTokenPublisher.from_environment(tokenstore)
 
 
 # --- Tool filtering ---------------------------------------------------------
@@ -164,8 +166,9 @@ class _GarminProxy:
         ),
     }
 
-    def __init__(self, client):
+    def __init__(self, client, publisher=None):
         self._client = client
+        self._publisher = publisher
 
     def __getattr__(self, name):
         attr = getattr(self._client, name)
@@ -174,7 +177,10 @@ class _GarminProxy:
 
         def _call(*args, **kwargs):
             try:
-                return attr(*args, **kwargs)
+                result = attr(*args, **kwargs)
+                if self._publisher is not None:
+                    self._publisher.publish_if_changed()
+                return result
             except tuple(self._MESSAGES) as exc:
                 for exc_type, msg in self._MESSAGES.items():
                     if isinstance(exc, exc_type):
@@ -415,8 +421,9 @@ def main():
     # breaks the MCP stdio framing that Claude Desktop and other clients expect.
     # Force binary-transparent newlines so JSON messages arrive intact.
     if sys.platform == "win32":
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, newline="\n")
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(newline="\n")
 
     # --- Transport configuration --------------------------------------------
     # By default the server speaks stdio (Claude Desktop, MCP Inspector, etc.).
@@ -438,8 +445,12 @@ def main():
 
     print("Garmin Connect client initialized successfully.", file=sys.stderr)
 
+    # garminconnect may refresh OAuth while validating the mounted token during
+    # login. Persist that writable runtime copy before serving any requests.
+    token_publisher.publish_if_changed()
+
     # Wrap client so runtime auth/rate-limit errors surface as clear messages
-    garmin_client = _GarminProxy(garmin_client)
+    garmin_client = _GarminProxy(garmin_client, token_publisher)
 
     # Configure all modules with the Garmin client
     activity_management.configure(garmin_client)
